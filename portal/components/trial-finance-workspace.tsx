@@ -1,0 +1,55 @@
+'use client';
+import {useCallback,useEffect,useRef,useState} from 'react';
+import Link from 'next/link';
+import {PortalSidebar} from './portal-sidebar';
+import {SidebarProvider,SidebarTrigger} from './ui/sidebar';
+import {Button} from './ui/button';
+import {Input} from './ui/input';
+import {Dialog,DialogContent,DialogTitle,DialogDescription} from './ui/dialog';
+import type {TrialReport} from '@/lib/trial-finance';
+
+type TrialRow=TrialReport['rows'][number];
+type Editor={row:TrialRow;kind:'settle'|'payment';start:string;end:string;breakMinutes:string;amount:string;note:string;date:string;reference:string;requestId:string;confirmed:boolean};
+const money=(cents:number)=>new Intl.NumberFormat('en-AU',{style:'currency',currency:'AUD'}).format(cents/100);
+const stamp=(s:string)=>new Date(s).toLocaleString('en-GB',{timeZone:'Etc/GMT-10'});
+export function TrialFinanceWorkspace({initialDate,restaurant}:{initialDate:string;restaurant?:import('@/lib/shift-templates').Restaurant}){
+ const scope=restaurant?'&restaurant='+restaurant:'';
+ const [date,setDate]=useState(initialDate),[outstanding,setOutstanding]=useState(false),[report,setReport]=useState<TrialReport|null>(null);
+ const [revision,setRevision]=useState(0),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[editor,setEditor]=useState<Editor|null>(null);
+ const ticket=useRef(0);
+ const load=useCallback(async(day:string,pending:boolean)=>{
+  const id=++ticket.current;
+  try{const r=await fetch(`/api/finance?view=trial&date=${encodeURIComponent(day)}${pending?'&outstanding=1':''}${scope}`);const d=await r.json() as {report:TrialReport;workspaceRevision:number;error?:string};if(!r.ok)throw Error(d.error);if(id===ticket.current){setError('');setReport(d.report);setRevision(d.workspaceRevision)}}catch(e){if(id===ticket.current)setError((e as Error).message)}finally{if(id===ticket.current)setLoading(false)}
+ },[scope]);
+ // State updates in load occur only after the asynchronous request resolves.
+ // eslint-disable-next-line react-hooks/set-state-in-effect
+ useEffect(()=>{void load(date,outstanding)},[date,outstanding,load]);
+ function open(row:TrialRow,kind:Editor['kind']){setError('');setEditor({row,kind,start:row.shift.start,end:row.shift.end,breakMinutes:String(row.shift.breakMinutes),amount:'',note:'',date:report!.today,reference:'',requestId:crypto.randomUUID(),confirmed:false})}
+ function change(fields:Partial<Editor>){setEditor(e=>e?{...e,...fields}:null)}
+ async function submit(form:HTMLFormElement){
+  if(!editor)return;setBusy(true);setError('');
+  try{const input=new FormData(form),field=(key:string)=>String(input.get(key)||'');const body=new FormData();const fields=editor.kind==='settle'?{action:'trial-settle',weekStart:editor.row.weekStart,shiftId:editor.row.shift.id,start:field('start'),end:field('end'),breakMinutes:field('breakMinutes'),amount:field('amount'),note:field('note')}:{action:'trial-payment',settlementId:editor.row.settlement!.id,date:field('paymentDate'),reference:field('reference')};
+   Object.entries({...fields,requestId:editor.requestId,confirm:editor.confirmed?'yes':'no'}).forEach(([k,v])=>{if(v!==undefined)body.set(k,v)});
+   if(restaurant)body.set('restaurant',restaurant);const r=await fetch('/api/finance',{method:'POST',headers:{'x-portal-request':'1','x-workspace-revision':String(revision)},body});const d=await r.json() as {error?:string};if(!r.ok)throw Error(d.error);
+   setNotice(editor.kind==='settle'?'Trial settlement saved. Record the payment once it has been completed.':'Trial payment recorded.');setEditor(null);await load(date,outstanding);
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ const rows=report?.rows||[],unsettled=rows.filter(r=>!r.settlement).length;
+ const query=`view=trial&date=${encodeURIComponent(date)}${outstanding?'&outstanding=1':''}${scope}`;
+ return <SidebarProvider><PortalSidebar active="finance"/><div className="workspace"><header className="topbar"><div><SidebarTrigger/><span>Workflows / Finance / Trial</span></div><span className="demo-badge">AUD · UTC+10</span></header><main className="availability-page finance-workspace">
+  <div className="page-heading"><div><p className="eyebrow">TRIAL · DAILY SETTLEMENT</p><h1>Trial settlements</h1><p>Flexible trial hours. Enter the agreed total for each trial and record payment on the day.</p></div><Link className="primary-link" href={'/finance?'+scope.slice(1)}>Monthly finance</Link></div>
+  <div className="finance-month-toolbar"><label>Trial date<Input type="date" aria-label="Trial date" value={date} disabled={busy||outstanding} onChange={e=>{if(e.target.value){setLoading(true);setDate(e.target.value);setNotice('')}}}/></label><Button variant="outline" disabled={!report||busy||loading} onClick={()=>{setLoading(true);setOutstanding(false);setDate(report!.today);void load(report!.today,false)}}>Today</Button><label className="trial-pending-filter"><input type="checkbox" checked={outstanding} disabled={busy} onChange={e=>{setLoading(true);setOutstanding(e.target.checked);setNotice('')}}/>All unpaid trials through today</label><Button variant="outline" disabled={busy||loading} onClick={()=>{setLoading(true);void load(date,outstanding)}}>Refresh</Button><a className="text-link" href={'/api/finance?'+query+'&kind=csv'}>Export trial CSV</a></div>
+  {error&&!editor&&<p className="error" role="alert">{error}</p>}{notice&&<p className="demo-notice" role="status">{notice}</p>}
+  <p className="performance-hint">Trial totals are entered manually. No early, late or full-day template applies. Each trial is settled separately from weekly checkout and monthly payroll.</p>
+  {loading?<section className="panel empty">Loading trial settlements…</section>:report&&<>
+   <div className="finance-metrics"><section className="panel"><span>Trials in this view</span><strong>{rows.length}</strong></section><section className="panel"><span>Need settlement</span><strong>{unsettled}</strong></section><section className="panel"><span>Confirmed totals</span><strong>{money(report.totalSettledCents)}</strong></section><section className="panel"><span>Outstanding confirmed amount</span><strong>{money(report.totalSettledCents-report.totalPaidCents)}</strong></section></div>
+   <section className="panel trial-finance-list"><div className="finance-heading"><div><h2>{outstanding?'Unpaid trials':date+' · Trial register'}</h2><p>Confirm actual work first, then record the completed payment. Older unpaid trials remain visible until paid.</p></div></div>
+   {!rows.length?<div className="finance-empty"><h3>{outstanding?'No unpaid trials through today':'No trials on this date'}</h3><Link className="text-link" href="/timetable?category=Trial">Arrange a trial →</Link></div>:<div className="report-scroll"><table><thead><tr><th>Trial / person</th><th>Work</th><th>Settlement total</th><th>Status</th><th>Action</th></tr></thead><tbody>{rows.map(row=><tr key={row.weekStart+row.shift.id}><td><strong>{row.shift.employee.name}</strong><small>{row.shift.date} · {row.shift.restaurant||'Unassigned'}</small><Link className="text-link" href={`/timetable?week=${row.weekStart}&category=Trial&restaurant=${encodeURIComponent(row.shift.restaurant||'all')}`}>View timetable</Link></td><td>{row.shift.start}–{row.shift.end}<small>Scheduled · {row.shift.breakMinutes} min break</small>{row.settlement&&<small>Actual: {row.settlement.actual.start}–{row.settlement.actual.end} · {row.settlement.workedMinutes} worked min</small>}</td><td>{row.settlement?money(row.settlement.amountCents):'Enter total'}<small>Per trial · AUD</small></td><td><span className="finance-status">{row.status}</span>{row.overdue&&<small className="error">Overdue · due on trial date</small>}{row.payment&&<small>Paid {row.payment.date}</small>}</td><td>{!row.settlement?<Button variant="outline" disabled={busy} onClick={()=>open(row,'settle')}>Settle trial</Button>:!row.payment?<Button disabled={busy} onClick={()=>open(row,'payment')}>Record payment</Button>:<strong className="trial-paid">Paid</strong>}{row.settlement&&<details className="trial-audit"><summary>History</summary><p>Settled by {row.settlement.createdBy}<small>{stamp(row.settlement.createdAt)}</small></p>{row.settlement.note&&<p>{row.settlement.note}</p>}{row.payment&&<p>Payment recorded by {row.payment.createdBy}<small>{stamp(row.payment.createdAt)}</small><small>{row.payment.reference}</small></p>}</details>}</td></tr>)}</tbody></table></div>}
+   </section>
+  </>}
+  <Dialog open={!!editor} onOpenChange={v=>{if(!v&&!busy)setEditor(null)}}><DialogContent className="portal-dialog"><DialogTitle>{editor?.kind==='settle'?'Settle trial':'Record completed trial payment'}</DialogTitle><DialogDescription>{editor?.row.shift.employee.name} · {editor?.row.shift.date}. {editor?.kind==='settle'?'Confirm actual work and enter the total for this trial. No hourly rate is calculated.':'Record a payment already completed outside the portal.'}</DialogDescription>{editor&&<form className="form-stack" onSubmit={e=>{e.preventDefault();void submit(e.currentTarget)}}>
+   {editor.kind==='settle'?<><div className="roster-time-inputs"><label>Actual start<Input type="time" step="60" required name="start" defaultValue={editor.start}/></label><label>Actual end (24:00 = midnight)<Input required pattern="([01][0-9]|2[0-3]):[0-5][0-9]|24:00" name="end" defaultValue={editor.end}/></label></div><label>Unpaid break (minutes)<Input type="number" min="0" step="1" required name="breakMinutes" defaultValue={editor.breakMinutes}/></label><label>Settlement total (AUD)<Input type="number" min="0.01" step="0.01" required placeholder="Enter the total for this trial" name="amount" defaultValue={editor.amount}/></label><label>Settlement note · optional<Input maxLength={1000} name="note" defaultValue={editor.note}/></label><p>After confirmation, this trial’s schedule and settlement are retained as a frozen record.</p></>:<><p className="trial-payment-total">Full trial payment: <strong>{money(editor.row.settlement!.amountCents)}</strong></p><label>Actual payment date<Input type="date" required min={editor.row.shift.date} max={report?.today} name="paymentDate" defaultValue={editor.date}/></label><label>Payment reference / note<Input required maxLength={300} placeholder="E.g. cash receipt or transfer reference" name="reference" defaultValue={editor.reference}/></label></>}
+   <label className="live-confirm"><input type="checkbox" required checked={editor.confirmed} onChange={e=>change({confirmed:e.target.checked})}/>{editor.kind==='settle'?'I confirm the trial has finished, the actual hours are correct and I have reviewed the total.':'I confirm the full payment has already been completed.'}</label>{error&&<p className="error" role="alert">{error}</p>}<Button disabled={busy||!editor.confirmed}>{busy?'Saving…':editor.kind==='settle'?'Confirm trial settlement':'Save payment record'}</Button>
+  </form>}</DialogContent></Dialog>
+ </main></div></SidebarProvider>;
+}

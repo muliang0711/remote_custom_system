@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+const base=process.env.TEST_URL||'http://127.0.0.1:3001';
+if(!process.env.TEST_COOKIE)throw Error('Use verify-multiuser.mjs to run this test with an isolated authenticated server.');
+const authenticatedFetch=(url,init={})=>fetch(url,{...init,headers:{cookie:process.env.TEST_COOKIE,origin:base,'x-portal-request':'1',...init.headers}});
+async function post(fields,file,status=200){const data=new FormData();for(const [k,v]of Object.entries(fields))data.set(k,v);if(file)data.set('file',new Blob([file],{type:'application/pdf'}),'test.pdf');const r=await authenticatedFetch(base+'/api/portal',{method:'POST',body:data});const result=await r.json();assert.equal(r.status,status,JSON.stringify(result));return result}
+let s=await (await authenticatedFetch(base+'/api/portal')).json();const pdf=await(await authenticatedFetch(base+'/api/files/sample-1.pdf')).arrayBuffer();assert.equal(Buffer.from(pdf).subarray(0,5).toString(),'%PDF-');
+s=await post({action:'upload',name:'QA reusable template',category:'Operations'},pdf);const doc=s.documents[0];assert.equal(doc.name,'QA reusable template');
+await post({action:'upload',name:'invalid'},'not PDF',400);
+s=await post({action:'send',name:'QA assignment',docId:doc.id,groups:'["all","operations"]',message:'Test'},null);const a=s.assignments[0];assert.equal(a.recipients.length,6);assert.equal(s.documents.filter(d=>d.id===doc.id).length,1);
+const r=a.recipients[0];const reply={action:'reply',assignmentId:a.id,sender:r.email,threadId:r.threadId};
+s=await post({...reply,threadId:'wrong-thread'},pdf);assert.equal(s.reviews[0].reason,'Sender and email thread do not match this assignment.');assert.equal(s.assignments[0].recipients[0].status,'Pending');
+s=await post(reply,null);assert.equal(s.reviews[0].reason,'No valid PDF attachment found.');
+s=await post({...reply,assignmentId:'unknown'},pdf);assert.equal(s.reviews[0].reason,'Assignment ID could not be matched.');
+s=await post(reply,pdf);const done=s.assignments[0].recipients[0];assert.equal(done.status,'Completed');assert.ok(done.destination.includes('/QA assignment/'));assert.ok(!done.destination.includes('Templates'));
+const returned=await authenticatedFetch(base+'/api/files/'+done.returnedFile);assert.equal(returned.status,200);assert.deepEqual(Buffer.from(await returned.arrayBuffer()),Buffer.from(pdf));
+await post(reply,pdf,400);const persisted=await(await authenticatedFetch(base+'/api/portal')).json();assert.equal(persisted.assignments[0].recipients[0].status,'Completed');
+await post({action:'send',name:'empty groups',docId:doc.id,groups:'[]'},null,400);
+await post({action:'link',name:'bad URL',url:'https://example.com'},null,400);
+s=await post({action:'group',name:'QA group',members:'Test Employee, employee@example.com\nTest Employee, employee@example.com'},null);assert.equal(s.groups.at(-1).members.length,1);
+console.log('PASS: PDF upload/view, invalid PDF rejection, assignment creation, overlapping-group deduplication, wrong-thread quarantine, missing-PDF quarantine, unmatched assignment quarantine, successful PDF collection, destination association, returned-file access, duplicate submission rejection, persistence, invalid group/link rejection, group creation.');

@@ -1,0 +1,7 @@
+import {requireAdmin,bindCompanyMailbox} from '@/lib/portal-auth';
+import {secureCookies} from '@/lib/request-security';
+import {NextResponse} from 'next/server';
+import {randomBytes,createHash} from 'node:crypto';
+import {readConnection,configured,clientConfig,appOrigin,scopes,encrypt,localRequest} from '@/lib/google-auth';
+export const runtime='nodejs';
+export async function POST(request:Request){try{localRequest(request,true);requireAdmin(request);const existing=readConnection();if(existing)bindCompanyMailbox(existing.email);if(!configured())return Response.json({error:'Add your Google OAuth client to .env.local, then restart the portal.'},{status:503});const state=randomBytes(32).toString('base64url'),verifier=randomBytes(48).toString('base64url');const url=new URL('https://accounts.google.com/o/oauth2/v2/auth');url.search=new URLSearchParams({client_id:clientConfig()!.clientId,redirect_uri:appOrigin()+'/api/google/callback',response_type:'code',scope:scopes.join(' '),access_type:'offline',prompt:'consent',state,code_challenge:createHash('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256'}).toString();const response=NextResponse.json({url:url.href});response.cookies.set('jym_oauth',encrypt({state,verifier,memberId:requireAdmin(request).id,expires:Date.now()+600000}),{httpOnly:true,secure:secureCookies(),sameSite:'lax',path:'/api/google',maxAge:600});response.headers.set('Cache-Control','no-store');return response}catch(e){return Response.json({error:(e as Error).message},{status:400})}}

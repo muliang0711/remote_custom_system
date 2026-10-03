@@ -1,0 +1,7 @@
+import {NextResponse} from 'next/server';
+import {decrypt,equal} from '@/lib/google-auth';
+import {exchangeLogin} from '@/lib/google-login';
+import {consumeOAuth,createLogin,portalCookie,requestCookie,sessionSeconds,logout} from '@/lib/portal-auth';
+import {appOrigin,validateRequest,secureCookies} from '@/lib/request-security';
+export const runtime='nodejs';
+export async function GET(request:Request){let response:NextResponse;try{validateRequest(request);const p=new URL(request.url).searchParams;const saved=decrypt<{state:string;verifier:string;nonce:string;expires:number}>(requestCookie(request,'jym_login'));if(!saved.state||saved.expires<Date.now()||!equal(saved.state,p.get('state')||''))throw Error('Sign-in request expired. Try again.');consumeOAuth(saved.state);if(p.has('error'))throw Error('Google sign-in was cancelled.');const code=p.get('code');if(!code)throw Error('Google did not return a sign-in code.');const token=createLogin(await exchangeLogin(code,saved.verifier,saved.nonce));logout(request);response=NextResponse.redirect(appOrigin()+'/?mode=live');response.cookies.set(portalCookie,token,{httpOnly:true,secure:secureCookies(),sameSite:'lax',path:'/',maxAge:sessionSeconds});}catch(e){response=NextResponse.redirect(appOrigin()+'/login?error='+encodeURIComponent(e instanceof Error?e.message:'Sign-in failed.'))}response.cookies.set('jym_login','',{path:'/api/auth',maxAge:0});response.headers.set('Cache-Control','no-store');response.headers.set('Referrer-Policy','no-referrer');return response}

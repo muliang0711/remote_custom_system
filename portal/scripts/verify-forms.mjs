@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import ts from 'typescript';
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),'jym-forms-test-'));
+process.env.GOOGLE_DATA_DIR=path.join(temp,'data');
+for(const name of ['portal-auth','request-security','google-auth','live-store','people-db','business-rules','shift-templates','employee-model','person-forms','google-forms','demo-store']){const js=ts.transpileModule(fs.readFileSync(`lib/${name}.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText.replace(/from ['"]\.\/([^'"]+)['"]/g,(_,n)=>`from './${n}.mjs'`);fs.writeFileSync(path.join(temp,name+'.mjs'),js)}
+const auth=await import(pathToFileURL(path.join(temp,'google-auth.mjs'))),store=await import(pathToFileURL(path.join(temp,'live-store.mjs'))),forms=await import(pathToFileURL(path.join(temp,'google-forms.mjs')));
+auth.saveConnection({accessToken:'test',refreshToken:'test',expiresAt:Date.now()+3600000,email:'owner@example.com'});
+const email='owner@example.com';let mode='VERIFIED',responses=[],fail=false,pages=0;
+globalThis.fetch=async url=>{const u=new URL(url);assert.equal(u.hostname,'forms.googleapis.com');if(fail)return new Response('{}',{status:403});const data=u.pathname.endsWith('/responses')?(pages++%2===0?{responses:responses.slice(0,1),nextPageToken:'page2'}:{responses:responses.slice(1)}):{settings:{emailCollectionType:mode},responderUri:'https://docs.google.com/forms/d/e/public/viewform'};return new Response(JSON.stringify(data))};
+const assignment=(id)=>({id,name:id,docId:'form',formId:'form',created:'2026-09-01T00:00:00Z',recipients:[{id:'r',name:'Tester',email:'tester@example.com',delivery:'sent',status:'Pending',threadId:'thread'}]});
+const state=()=>({...store.loadLive('fresh@example.com'),assignments:[assignment('A')],formTracking:{form:{verifiedSince:'2026-09-02T00:00:00Z'}}});
+responses=[{responseId:'one',respondentEmail:'TESTER@example.com',createTime:'2026-09-03T00:00:00Z'}];let s=state();await forms.collectFormResponses(s,email);assert.equal(s.assignments[0].recipients[0].status,'Completed');assert.equal(s.assignments[0].recipients[0].formResponseId,'one');await forms.collectFormResponses(s,email);assert.equal(s.reviews.length,0);assert.equal(s.processedFormResponses.length,1);
+s=state();s.assignments.push(assignment('B'));await forms.collectFormResponses(s,email);assert.equal(s.reviews.length,1);assert.ok(s.assignments.every(a=>a.recipients[0].status==='Pending'));
+s=state();mode='RESPONDER_INPUT';await forms.collectFormResponses(s,email);assert.equal(s.assignments[0].recipients[0].status,'Pending');assert.match(s.formsErrors[0],/Verified/);assert.equal(s.formTracking.form,undefined);
+mode='VERIFIED';s=state();responses=[{responseId:'old',respondentEmail:'tester@example.com',createTime:'2026-09-01T12:00:00Z'},{responseId:'missing',createTime:'2026-09-03T00:00:00Z'},{responseId:'other',respondentEmail:'other@example.com',createTime:'2026-09-03T00:00:00Z'}];await forms.collectFormResponses(s,email);assert.equal(s.reviews.length,3);assert.equal(s.assignments[0].recipients[0].status,'Pending');
+s=state();responses=[{responseId:'edited-old',respondentEmail:'tester@example.com',createTime:'2026-08-01T00:00:00Z',lastSubmittedTime:'2026-09-03T00:00:00Z'}];await forms.collectFormResponses(s,email);assert.equal(s.assignments[0].recipients[0].status,'Pending');
+s=state();fail=true;await forms.collectFormResponses(s,email);assert.match(s.formsErrors[0],/Enable Google Forms API/);assert.ok(s.lastFormsChecked);
+fs.rmSync(temp,{recursive:true,force:true});console.log('PASS: verified email matching, pagination, duplicate prevention, ambiguous assignment review, unverified/missing/wrong email, historical response protection, edited old response protection, actionable API errors. No live emails sent.');

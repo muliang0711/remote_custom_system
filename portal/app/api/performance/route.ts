@@ -1,0 +1,14 @@
+import {checkWorkspaceRevision} from '@/lib/live-store';
+import {localRequest,session} from '@/lib/google-auth';
+import {exclusive,loadLive} from '@/lib/live-store';
+import {createPerformance,generateDrafts,preparePerformance,preparedBytes,performanceAction,uploadReviewTemplate} from '@/lib/performance';
+export const runtime='nodejs';
+export const dynamic='force-dynamic';
+export async function GET(request:Request){try{localRequest(request);const c=session(request);const u=new URL(request.url);const bytes=await exclusive(async()=>{if(session(request).email!==c.email)throw Error('Account changed.');return preparedBytes(loadLive(c.email),u.searchParams.get('id')||'',u.searchParams.get('person')||'',u.searchParams.get('version')||'')});return new Response(new Uint8Array(bytes),{headers:{'Content-Type':'application/pdf','Content-Disposition':'inline; filename="performance-review.pdf"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}})}catch(e){return Response.json({error:(e as Error).message},{status:400})}}
+export async function POST(request:Request){try{localRequest(request,true);const c=session(request);if(Number(request.headers.get('content-length'))>16*1024*1024)throw Error('File must be under 15 MB.');const f=await request.formData(),field=(k:string)=>String(f.get(k)||'').trim();return await exclusive(async()=>{if(session(request).email!==c.email)throw Error('Account changed.');const s=loadLive(c.email);checkWorkspaceRevision(request,s);const action=field('action');
+ if(action==='create'){if(!/^[a-f0-9-]{36}$/.test(field('requestId')))throw Error('Missing request identifier.');const groups=JSON.parse(field('groups'));if(!Array.isArray(groups)||groups.some(g=>typeof g!=='string'))throw Error('Choose employee groups.');await createPerformance(s,c.email,{name:field('name'),docId:field('docId'),due:field('due'),groups,requestId:field('requestId')})}
+ else if(action==='upload'){const file=f.get('file');if(!(file instanceof File)||!file.name.toLowerCase().endsWith('.docx')||file.size>15*1024*1024)throw Error('Select a DOCX file under 15 MB.');await uploadReviewTemplate(s,c.email,field('name'),Buffer.from(await file.arrayBuffer()))}
+ else if(action==='generate')await generateDrafts(s,c.email,field('id'));
+ else if(action==='prepare')await preparePerformance(s,c.email,field('id'),field('person'));
+ else{if(action==='send'&&field('confirmLive')!=='yes')throw Error('Confirm the employee and PDF before sending real email.');if(action==='reviewed'&&field('confirmSignature')!=='yes')throw Error('Confirm that you checked the returned signature.');await performanceAction(s,c.email,field('id'),field('person'),action,field('version'))}
+ return Response.json(s,{headers:{'Cache-Control':'no-store'}})})}catch(e){return Response.json({error:(e as Error).message},{status:400})}}
